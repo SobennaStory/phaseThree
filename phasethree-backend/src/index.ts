@@ -1,6 +1,7 @@
 import express, { Request, Response } from "express";
 import cors from "cors";
 import mysql from "mysql2/promise";
+import { RowDataPacket, ResultSetHeader } from "mysql2";
 
 //This assumes you have alraedy ran mysql workbench with our CREATE_TABLES.sql under a database named stock_trading
 const db = mysql.createPool({
@@ -196,29 +197,37 @@ app.get("/api/orders", async (req: Request, res: Response) => {
 
 app.post("/api/orders", async (req: Request, res: Response) => {
   try {
-    const { portfolioId, sId, quantity, price, type } = req.body;
+    const { investorId, sId, quantity, price, type } = req.body;
 
-    const [result]: any = await db.query(
-      `INSERT INTO \`Order\` (P_ID, S_ID, Quantity, Price, Type, Status, Order_Date)
-    VALUES (?, ?, ?, ?, ?, 'pending', NOW())`,
-      [portfolioId, sId, quantity, price, type]
-    );
+    if (!investorId || !sId || !quantity || !price) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
 
-    res.json({
-      orderId: result.insertId,
-      portfolioId,
+    const insertQuery = `
+      INSERT INTO \`Order\` (ID, S_ID, Quantity, Price, Status, Date)
+      VALUES (?, ?, ?, ?, 'Pending', NOW())
+    `;
+
+    // Use ResultSetHeader type for INSERT result
+    const [result] = await db.query<ResultSetHeader>(insertQuery, [
+      investorId,
       sId,
       quantity,
       price,
-      type,
-      status: "pending",
-    });
+    ]);
+
+    // Fetch the inserted order, use RowDataPacket[]
+    const [rows] = await db.query<RowDataPacket[]>(
+      "SELECT * FROM `Order` WHERE Order_ID = ?",
+      [result.insertId]
+    );
+
+    res.json(rows[0]);
   } catch (err) {
     console.error("Error creating order:", err);
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
-
 // ------------------------
 // Start Server
 // ------------------------

@@ -150,7 +150,7 @@ export const Dashboard: React.FC<{ investor: Investor }> = ({ investor }) => {
 };
 
 export const Holdings: React.FC<{ portfolios?: Portfolio[] }> = ({
-  portfolios,
+  portfolios = [],
 }) => {
   const [selectedPortfolioId, setSelectedPortfolioId] = useState<number | null>(
     portfolios && portfolios.length > 0 ? portfolios[0].pId : null
@@ -162,18 +162,19 @@ export const Holdings: React.FC<{ portfolios?: Portfolio[] }> = ({
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!selectedPortfolioId) return;
+    if (!selectedPortfolioId && portfolios.length > 0) {
+      setSelectedPortfolioId(portfolios[0].pId);
+    }
+  }, [portfolios, selectedPortfolioId]);
 
+  useEffect(() => {
+    if (!selectedPortfolioId) return;
     const fetchHoldings = async () => {
       try {
         setLoading(true);
-
-        if (!selectedPortfolioId) return;
-
         const holdingsRes = await fetch(
           `http://localhost:4000/api/holdings/${selectedPortfolioId}`
         );
-
         if (!holdingsRes.ok) {
           console.warn(
             `Holdings not found for portfolio ${selectedPortfolioId}`
@@ -181,7 +182,6 @@ export const Holdings: React.FC<{ portfolios?: Portfolio[] }> = ({
           setHoldings([]);
           return;
         }
-
         const data = await holdingsRes.json();
         setHoldings(data.holdings || []);
       } catch (err) {
@@ -190,7 +190,6 @@ export const Holdings: React.FC<{ portfolios?: Portfolio[] }> = ({
         setLoading(false);
       }
     };
-
     fetchHoldings();
   }, [selectedPortfolioId]);
 
@@ -236,7 +235,7 @@ export const Holdings: React.FC<{ portfolios?: Portfolio[] }> = ({
                 <td>{h.stock?.sector || "-"}</td>
                 <td>{h.listing?.exchangeCode || "-"}</td>
                 <td>{h.quantity}</td>
-                <td>${h.purchasePrice.toFixed(2)}</td>
+                <td>${h.purchasePrice}</td>
                 <td>${totalValue.toLocaleString()}</td>
               </tr>
             );
@@ -247,13 +246,13 @@ export const Holdings: React.FC<{ portfolios?: Portfolio[] }> = ({
   );
 };
 
-export const Orders: React.FC<{ portfolios?: Portfolio[] }> = ({
-  portfolios,
-}) => {
+export const Orders: React.FC<{
+  portfolios?: Portfolio[];
+  investorId: number;
+}> = ({ portfolios, investorId }) => {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [newOrder, setNewOrder] = useState({
-    portfolioId: portfolios?.[0]?.pId ?? 0,
     sId: 0,
     quantity: 0,
     price: 0,
@@ -292,7 +291,13 @@ export const Orders: React.FC<{ portfolios?: Portfolio[] }> = ({
       const res = await fetch("http://localhost:4000/api/orders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(newOrder),
+        body: JSON.stringify({
+          investorId,
+          sId: newOrder.sId,
+          quantity: newOrder.quantity,
+          price: newOrder.price,
+          type: newOrder.type,
+        }),
       });
       if (!res.ok) throw new Error("Order failed");
       const order: Order = await res.json();
@@ -309,85 +314,106 @@ export const Orders: React.FC<{ portfolios?: Portfolio[] }> = ({
   if (loading) return <div>Loading orders...</div>;
 
   return (
-    <div className="orders">
-      <h2>📈 Orders</h2>
+    <>
+      <h2 className="section-title">📈 Place an Order</h2>
 
-      {message && <div className="message">{message}</div>}
-
-      <form onSubmit={handlePlaceOrder}>
-        <div>
-          <label>Portfolio</label>
-          <select
-            value={newOrder.portfolioId}
-            onChange={(e) =>
-              setNewOrder({ ...newOrder, portfolioId: Number(e.target.value) })
-            }
-          >
-            {portfolios?.map((p) => (
-              <option
-                key={p.pId}
-                value={p.pId}
-              >
-                {p.name}
-              </option>
-            ))}
-          </select>
+      {message && (
+        <div
+          className={
+            message.includes("success") ? "success-message" : "error-message"
+          }
+        >
+          {message}
         </div>
-        <div>
+      )}
+
+      {/* Order Type Toggle */}
+      <div className="order-type-selector">
+        <button
+          type="button"
+          className={`order-type-btn ${
+            newOrder.type === "buy" ? "active" : ""
+          }`}
+          onClick={() => setNewOrder({ ...newOrder, type: "buy" })}
+        >
+          Buy
+        </button>
+        <button
+          type="button"
+          className={`order-type-btn ${
+            newOrder.type === "sell" ? "active" : ""
+          }`}
+          onClick={() => setNewOrder({ ...newOrder, type: "sell" })}
+        >
+          Sell
+        </button>
+      </div>
+
+      {/* Order Form */}
+      <form
+        className="order-form"
+        onSubmit={handlePlaceOrder}
+      >
+        <div className="form-group">
           <label>Stock ID</label>
           <input
             type="number"
+            className="form-control"
             value={newOrder.sId}
             onChange={(e) =>
               setNewOrder({ ...newOrder, sId: Number(e.target.value) })
             }
           />
         </div>
-        <div>
-          <label>Quantity</label>
-          <input
-            type="number"
-            value={newOrder.quantity}
-            onChange={(e) =>
-              setNewOrder({ ...newOrder, quantity: Number(e.target.value) })
-            }
-          />
+
+        <div className="form-row">
+          <div className="form-group">
+            <label>Quantity</label>
+            <input
+              type="number"
+              className="form-control"
+              value={newOrder.quantity}
+              onChange={(e) =>
+                setNewOrder({
+                  ...newOrder,
+                  quantity: Number(e.target.value),
+                })
+              }
+            />
+          </div>
+
+          <div className="form-group">
+            <label>Price per Share</label>
+            <input
+              type="number"
+              step="0.01"
+              className="form-control"
+              value={newOrder.price}
+              onChange={(e) =>
+                setNewOrder({
+                  ...newOrder,
+                  price: Number(e.target.value),
+                })
+              }
+            />
+          </div>
         </div>
-        <div>
-          <label>Price per Share</label>
-          <input
-            type="number"
-            step="0.01"
-            value={newOrder.price}
-            onChange={(e) =>
-              setNewOrder({ ...newOrder, price: Number(e.target.value) })
-            }
-          />
-        </div>
-        <div>
-          <label>Order Type</label>
-          <select
-            value={newOrder.type}
-            onChange={(e) =>
-              setNewOrder({
-                ...newOrder,
-                type: e.target.value as "buy" | "sell",
-              })
-            }
-          >
-            <option value="buy">Buy</option>
-            <option value="sell">Sell</option>
-          </select>
-        </div>
-        <button type="submit">Place Order</button>
+
+        <button
+          type="submit"
+          className="btn btn-primary"
+        >
+          Place Order
+        </button>
       </form>
 
-      <h3>Existing Orders</h3>
-      <table>
+      <h2 className="section-title">📄 Existing Orders</h2>
+
+      <table className="holdings-table">
         <thead>
           <tr>
             <th>Order ID</th>
-            <th>Portfolio</th>
+            <th>Investor ID</th>
             <th>Stock ID</th>
             <th>Quantity</th>
             <th>Price</th>
@@ -407,7 +433,7 @@ export const Orders: React.FC<{ portfolios?: Portfolio[] }> = ({
           ))}
         </tbody>
       </table>
-    </div>
+    </>
   );
 };
 

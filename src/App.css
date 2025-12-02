@@ -497,8 +497,7 @@ select.form-control {
 
 /* Inner scrolling for tall content */
 .card-container {
-  max-height: 800px;
-  overflow-y: auto;
+  max-height: 1000px;
 }
 
 /* Custom scrollbar */

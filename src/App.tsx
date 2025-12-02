@@ -89,7 +89,10 @@ function App() {
             <Holdings portfolios={investor.portfolios || []} />
           </div>
           <div className="card-container orders-card">
-            <Orders portfolios={investor.portfolios || []} />
+            <Orders
+              portfolios={investor.portfolios || []}
+              investorId={investor.id}
+            />
           </div>
           <div className="card-container profile-card">
             <Profile
