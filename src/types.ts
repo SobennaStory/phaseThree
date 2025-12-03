@@ -18,9 +18,9 @@ export interface Portfolio {
 }
 
 export interface Stock {
-  sId: number;
-  companyName: string;
-  sector: string;
+  S_ID: number;
+  Company_Name: string;
+  Sector: string;
 }
 
 export interface StockSector {

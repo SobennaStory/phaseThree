@@ -9,6 +9,17 @@ import type {
   MarketListing,
 } from "../types";
 
+interface HoldingWithStock extends Holding {
+  stock?: Stock;
+  listing?: MarketListing;
+}
+
+interface OrdersProps {
+  portfolios?: Portfolio[];
+  investorId: number;
+  onHoldingsUpdate?: (pId: number) => void;
+}
+
 export const Header: React.FC<{ investor: Investor }> = ({ investor }) => {
   return (
     <header className="header">
@@ -140,7 +151,7 @@ export const Dashboard: React.FC<{ investor: Investor }> = ({ investor }) => {
       <div className="portfolio-grid">
         {portfolios.map((portfolio) => (
           <PortfolioCard
-            key={portfolio.pId}
+            key={`${portfolio.pId}-${portfolio.id}`}
             portfolio={portfolio}
           />
         ))}
@@ -153,43 +164,55 @@ export const Holdings: React.FC<{ portfolios?: Portfolio[] }> = ({
   portfolios = [],
 }) => {
   const [selectedPortfolioId, setSelectedPortfolioId] = useState<number | null>(
-    portfolios && portfolios.length > 0 ? portfolios[0].pId : null
+    portfolios.length > 0 ? portfolios[0].pId : null
   );
-
-  const [holdings, setHoldings] = useState<
-    (Holding & { stock?: Stock; listing?: MarketListing })[]
-  >([]);
+  const [holdings, setHoldings] = useState<HoldingWithStock[]>([]);
+  const [portfolioValue, setPortfolioValue] = useState<number>(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!selectedPortfolioId && portfolios.length > 0) {
-      setSelectedPortfolioId(portfolios[0].pId);
-    }
-  }, [portfolios, selectedPortfolioId]);
-
-  useEffect(() => {
     if (!selectedPortfolioId) return;
+
     const fetchHoldings = async () => {
       try {
         setLoading(true);
+
+        // Fetch holdings for the selected portfolio
         const holdingsRes = await fetch(
-          `http://localhost:4000/api/holdings/${selectedPortfolioId}`
+          `http://localhost/api/get_portfolio_holdings.php?pId=${selectedPortfolioId}`
         );
-        if (!holdingsRes.ok) {
-          console.warn(
-            `Holdings not found for portfolio ${selectedPortfolioId}`
-          );
-          setHoldings([]);
-          return;
-        }
         const data = await holdingsRes.json();
-        setHoldings(data.holdings || []);
+        const mappedHoldings: HoldingWithStock[] = (data.holdings || []).map(
+          (h: any) => ({
+            pId: h.P_ID,
+            sId: h.S_ID,
+            quantity: Number(h.Quantity),
+            purchasePrice: Number(h.Purchase_Price),
+            stock: {
+              companyName: h.Company_Name,
+              sector: h.Sector,
+            },
+            listing: {
+              exchangeCode: h.Exchange_Code,
+              symbolCode: h.Symbol_Code,
+            },
+          })
+        );
+        setHoldings(mappedHoldings);
+
+        // Fetch portfolio total value from backend
+        const valueRes = await fetch(
+          `http://localhost/api/calculate_portfolio_value.php?pId=${selectedPortfolioId}`
+        );
+        const valueData = await valueRes.json();
+        setPortfolioValue(valueData.totalValue ?? 0);
       } catch (err) {
-        console.error("Error fetching holdings", err);
+        console.error("Error fetching holdings or portfolio value:", err);
       } finally {
         setLoading(false);
       }
     };
+
     fetchHoldings();
   }, [selectedPortfolioId]);
 
@@ -204,7 +227,7 @@ export const Holdings: React.FC<{ portfolios?: Portfolio[] }> = ({
           value={selectedPortfolioId ?? ""}
           onChange={(e) => setSelectedPortfolioId(Number(e.target.value))}
         >
-          {portfolios?.map((p) => (
+          {portfolios.map((p) => (
             <option
               key={p.pId}
               value={p.pId}
@@ -213,6 +236,10 @@ export const Holdings: React.FC<{ portfolios?: Portfolio[] }> = ({
             </option>
           ))}
         </select>
+      </div>
+
+      <div className="portfolio-total-value">
+        <strong>Total Holding Value:</strong> ${portfolioValue.toLocaleString()}
       </div>
 
       <table>
@@ -228,15 +255,15 @@ export const Holdings: React.FC<{ portfolios?: Portfolio[] }> = ({
         </thead>
         <tbody>
           {holdings.map((h) => {
-            const totalValue = h.quantity * h.purchasePrice;
+            const total = h.quantity * h.purchasePrice;
             return (
-              <tr key={h.sId}>
-                <td>{h.stock?.companyName || "-"}</td>
-                <td>{h.stock?.sector || "-"}</td>
+              <tr key={`${h.pId}-${h.sId}`}>
+                <td>{h.stock?.Company_Name || "-"}</td>
+                <td>{h.stock?.Sector || "-"}</td>
                 <td>{h.listing?.exchangeCode || "-"}</td>
                 <td>{h.quantity}</td>
                 <td>${h.purchasePrice}</td>
-                <td>${totalValue.toLocaleString()}</td>
+                <td>${isNaN(total) ? 0 : total.toLocaleString()}</td>
               </tr>
             );
           })}
@@ -246,63 +273,106 @@ export const Holdings: React.FC<{ portfolios?: Portfolio[] }> = ({
   );
 };
 
-export const Orders: React.FC<{
-  portfolios?: Portfolio[];
-  investorId: number;
-}> = ({ portfolios, investorId }) => {
+export const Orders: React.FC<OrdersProps> = ({
+  portfolios = [],
+  investorId,
+  onHoldingsUpdate,
+}) => {
+  const [selectedPortfolioId, setSelectedPortfolioId] = useState<number | null>(
+    portfolios.length > 0 ? portfolios[0].pId : null
+  );
+  const [stocks, setStocks] = useState<Stock[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState("");
   const [newOrder, setNewOrder] = useState({
     sId: 0,
     quantity: 0,
     price: 0,
     type: "buy" as "buy" | "sell",
   });
-  const [message, setMessage] = useState<string>("");
 
+  // Fetch available stocks
   useEffect(() => {
-    const fetchOrders = async () => {
+    const fetchStocks = async () => {
       try {
-        setLoading(true);
-        const res = await fetch(`http://localhost:4000/api/orders`);
-        const fetchedOrders = await res.json();
-        const transformedOrders: Order[] = fetchedOrders.map((o: any) => ({
-          orderId: o.Order_ID,
-          id: o.ID,
-          sId: o.S_ID,
-          price: Number(o.Price),
-          quantity: o.Quantity,
-          status: o.Status,
-          date: o.Date,
-        }));
-        setOrders(transformedOrders);
+        const res = await fetch("http://localhost/api/get_stocks.php");
+        if (!res.ok) throw new Error("Failed to fetch stocks");
+        const data = await res.json();
+        setStocks(data.stocks || []);
       } catch (err) {
-        console.error("Error fetching orders", err);
-      } finally {
-        setLoading(false);
+        console.error(err);
       }
     };
+    fetchStocks();
+  }, []);
+
+  // Fetch orders
+  const fetchOrders = async () => {
+    try {
+      setLoading(true);
+      const res = await fetch("http://localhost/api/get_orders.php");
+      if (!res.ok) throw new Error("Failed to fetch orders");
+      const data = await res.json();
+      const transformedOrders: Order[] = data.map((o: any) => ({
+        orderId: o.Order_ID,
+        id: o.ID,
+        sId: o.S_ID,
+        quantity: Number(o.Quantity),
+        price: Number(o.Price),
+        status: o.Status,
+        date: o.Date,
+      }));
+      setOrders(transformedOrders);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
     fetchOrders();
   }, []);
 
   const handlePlaceOrder = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (
+      !selectedPortfolioId ||
+      newOrder.sId === 0 ||
+      newOrder.quantity <= 0 ||
+      newOrder.price <= 0
+    ) {
+      setMessage("Please fill in all fields correctly.");
+      setTimeout(() => setMessage(""), 3000);
+      return;
+    }
+
     try {
-      const res = await fetch("http://localhost:4000/api/orders", {
+      const res = await fetch("http://localhost/api/place_order.php", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           investorId,
+          pId: selectedPortfolioId,
           sId: newOrder.sId,
           quantity: newOrder.quantity,
           price: newOrder.price,
           type: newOrder.type,
         }),
       });
+
       if (!res.ok) throw new Error("Order failed");
-      const order: Order = await res.json();
-      setOrders([...orders, order]);
-      setMessage("Order placed successfully");
+
+      const data = await res.json();
+      if (data.success) {
+        setMessage("Order placed successfully!");
+        setOrders([...orders, data]);
+        setNewOrder({ sId: 0, quantity: 0, price: 0, type: "buy" });
+        if (onHoldingsUpdate) onHoldingsUpdate(selectedPortfolioId); // refresh holdings
+      } else {
+        setMessage("Failed to place order");
+      }
     } catch (err) {
       console.error(err);
       setMessage("Error placing order");
@@ -314,20 +384,37 @@ export const Orders: React.FC<{
   if (loading) return <div>Loading orders...</div>;
 
   return (
-    <>
+    <div className="orders">
       <h2 className="section-title">📈 Place an Order</h2>
 
       {message && (
         <div
-          className={
+          className={`message ${
             message.includes("success") ? "success-message" : "error-message"
-          }
+          }`}
         >
           {message}
         </div>
       )}
 
-      {/* Order Type Toggle */}
+      <div className="form-group">
+        <label>Select Portfolio</label>
+        <select
+          value={selectedPortfolioId ?? ""}
+          onChange={(e) => setSelectedPortfolioId(Number(e.target.value))}
+        >
+          {portfolios.map((p) => (
+            <option
+              key={p.pId}
+              value={p.pId}
+            >
+              {p.name} $
+              {isNaN(p.accountBalance) ? 0 : p.accountBalance.toLocaleString()}
+            </option>
+          ))}
+        </select>
+      </div>
+
       <div className="order-type-selector">
         <button
           type="button"
@@ -349,21 +436,28 @@ export const Orders: React.FC<{
         </button>
       </div>
 
-      {/* Order Form */}
       <form
         className="order-form"
         onSubmit={handlePlaceOrder}
       >
         <div className="form-group">
-          <label>Stock ID</label>
-          <input
-            type="number"
-            className="form-control"
+          <label>Stock</label>
+          <select
             value={newOrder.sId}
             onChange={(e) =>
               setNewOrder({ ...newOrder, sId: Number(e.target.value) })
             }
-          />
+          >
+            <option value={0}>Select a stock</option>
+            {stocks.map((s) => (
+              <option
+                key={s.S_ID}
+                value={s.S_ID}
+              >
+                {s.Company_Name} (ID: {s.S_ID}, Sector: {s.Sector})
+              </option>
+            ))}
+          </select>
         </div>
 
         <div className="form-row">
@@ -371,29 +465,22 @@ export const Orders: React.FC<{
             <label>Quantity</label>
             <input
               type="number"
-              className="form-control"
+              min={1}
               value={newOrder.quantity}
               onChange={(e) =>
-                setNewOrder({
-                  ...newOrder,
-                  quantity: Number(e.target.value),
-                })
+                setNewOrder({ ...newOrder, quantity: Number(e.target.value) })
               }
             />
           </div>
-
           <div className="form-group">
             <label>Price per Share</label>
             <input
               type="number"
               step="0.01"
-              className="form-control"
+              min={0.01}
               value={newOrder.price}
               onChange={(e) =>
-                setNewOrder({
-                  ...newOrder,
-                  price: Number(e.target.value),
-                })
+                setNewOrder({ ...newOrder, price: Number(e.target.value) })
               }
             />
           </div>
@@ -408,12 +495,11 @@ export const Orders: React.FC<{
       </form>
 
       <h2 className="section-title">📄 Existing Orders</h2>
-
-      <table className="holdings-table">
+      <table className="orders-table">
         <thead>
           <tr>
             <th>Order ID</th>
-            <th>Investor ID</th>
+            <th>Portfolio ID</th>
             <th>Stock ID</th>
             <th>Quantity</th>
             <th>Price</th>
@@ -424,7 +510,7 @@ export const Orders: React.FC<{
           {orders.map((o) => (
             <tr key={o.orderId}>
               <td>{o.orderId}</td>
-              <td>{o.id}</td>
+              <td>{(o as any).pId ?? "-"}</td>
               <td>{o.sId}</td>
               <td>{o.quantity}</td>
               <td>${o.price}</td>
@@ -433,7 +519,7 @@ export const Orders: React.FC<{
           ))}
         </tbody>
       </table>
-    </>
+    </div>
   );
 };
 
@@ -448,13 +534,14 @@ export const Profile: React.FC<{
     e.preventDefault();
     try {
       const res = await fetch(
-        `http://localhost:4000/api/investor/${investor.id}`,
+        `http://localhost/api/update_investor.php?id=${investor.id}`,
         {
-          method: "PUT",
+          method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(investor),
         }
       );
+
       if (!res.ok) throw new Error("Failed to update investor");
       setMessage("Profile updated on database");
     } catch (err) {
@@ -466,9 +553,14 @@ export const Profile: React.FC<{
 
   const handleCreatePortfolio = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newPortfolio.name || !newPortfolio.deposit) return;
+    if (!newPortfolio.name || !newPortfolio.deposit) {
+      setMessage("Please provide both a name and initial deposit.");
+      setTimeout(() => setMessage(""), 3000);
+      return;
+    }
+
     try {
-      const res = await fetch("http://localhost:4000/api/portfolios", {
+      const res = await fetch("http://localhost/api/create_portfolio.php", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -477,40 +569,64 @@ export const Profile: React.FC<{
           deposit: parseFloat(newPortfolio.deposit),
         }),
       });
+
       if (!res.ok) throw new Error("Failed to create portfolio");
+
       const data = await res.json();
+      if (!data.success)
+        throw new Error(data.error || "Failed to create portfolio");
+
+      // Map the PHP response to your TypeScript Portfolio type
+      const newPortfolioObj: Portfolio = {
+        pId: data.portfolio.P_ID,
+        id: data.portfolio.ID,
+        name: data.portfolio.Name,
+        accountBalance: data.portfolio.Account_Balance,
+        creationDate: data.portfolio.Creation_Date,
+        holdings: [],
+      };
+
       setInvestor({
         ...investor,
-        portfolios: [...(investor.portfolios || []), data.portfolio],
+        portfolios: [...(investor.portfolios || []), newPortfolioObj],
       });
+
       setNewPortfolio({ name: "", deposit: "" });
-      setMessage("Portfolio created on database");
+      setMessage("Portfolio created successfully!");
     } catch (err) {
-      console.error(err);
+      console.error("Create portfolio error:", err);
       setMessage("Error creating portfolio");
+    } finally {
+      setTimeout(() => setMessage(""), 3000);
     }
-    setTimeout(() => setMessage(""), 3000);
   };
 
   const deletePortfolio = async (portfolioId: number) => {
     try {
       const res = await fetch(
-        `http://localhost:4000/api/portfolios/${portfolioId}`,
-        {
-          method: "DELETE",
-        }
+        `http://localhost/api/delete_portfolio.php?pId=${portfolioId}`,
+        { method: "DELETE" }
       );
-      if (!res.ok) throw new Error("Failed to delete portfolio");
+
+      const data = await res.json();
+
+      if (!data.success) {
+        throw new Error(data.error || "Failed to delete portfolio");
+      }
+
       setInvestor({
         ...investor,
         portfolios: (investor.portfolios || []).filter(
-          (p) => p.id !== portfolioId
+          (p) => p.pId !== portfolioId
         ),
       });
+
       setMessage("Portfolio deleted");
       setTimeout(() => setMessage(""), 3000);
     } catch (err) {
-      console.error(err);
+      console.error("Delete portfolio error:", err);
+      setMessage("Error deleting portfolio");
+      setTimeout(() => setMessage(""), 3000);
     }
   };
 
@@ -571,9 +687,9 @@ export const Profile: React.FC<{
               })
             }
           >
-            <option value="Low">Low - Conservative</option>
-            <option value="Medium">Medium - Balanced</option>
-            <option value="High">High - Aggressive</option>
+            <option value="Conservative">Low - Conservative</option>
+            <option value="Balanced">Medium - Balanced</option>
+            <option value="Aggressive">High - Aggressive</option>
           </select>
         </div>
         <div className="action-buttons">
@@ -627,13 +743,14 @@ export const Profile: React.FC<{
       <div className="portfolio-list">
         {(investor.portfolios || []).map((p) => (
           <div
-            key={p.id}
+            key={`${p.pId}-${p.id}`}
             className="portfolio-item"
           >
-            {p.name} (${p.accountBalance.toLocaleString()}){" "}
+            {p.name} $
+            {isNaN(p.accountBalance) ? 0 : p.accountBalance.toLocaleString()}{" "}
             <button
               className="btn btn-danger"
-              onClick={() => deletePortfolio(p.id)}
+              onClick={() => deletePortfolio(p.pId)}
             >
               Delete
             </button>
